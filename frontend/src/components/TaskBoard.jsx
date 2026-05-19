@@ -208,6 +208,56 @@ function TaskDetailsPanel({ onTaskUpdate, onTaskVerify, savingTaskId, task }) {
   );
 }
 
+function ListTaskTable({ filteredTasks, onOpenDetails, onToggleSelect, savingTaskId, selectedTaskIds }) {
+  return (
+    <section className="panel table-panel">
+      <div className="table-wrap">
+        <table className="audit-table">
+          <thead>
+            <tr>
+              <th>Select</th>
+              <th>Status</th>
+              <th>Severity</th>
+              <th>Category</th>
+              <th>Task</th>
+              <th>Page</th>
+              <th>Updated</th>
+              <th>Assignee</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredTasks.map((task) => (
+              <tr key={task.id}>
+                <td>
+                  <input
+                    type="checkbox"
+                    checked={selectedTaskIds.includes(task.id)}
+                    disabled={savingTaskId === 'bulk-selection'}
+                    onChange={() => onToggleSelect(task.id)}
+                  />
+                </td>
+                <td>{getStatusLabel(task.status)}</td>
+                <td>
+                  <span className={`status-pill ${getSeverityClass(task.severity)}`}>{task.severity}</span>
+                </td>
+                <td>{task.category}</td>
+                <td>
+                  <button type="button" className="inline-button" onClick={() => onOpenDetails(task.id)}>
+                    {task.title}
+                  </button>
+                </td>
+                <td>{task.pageUrl}</td>
+                <td>{formatDateTime(task.updatedAt)}</td>
+                <td>{task.assignee || <span className="muted">Unassigned</span>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
 function TaskBoard({
   auditId,
   filteredTasks = [],
@@ -531,6 +581,14 @@ function TaskBoard({
               ))}
             </div>
           </section>
+        ) : viewMode === 'list' ? (
+          <ListTaskTable
+            filteredTasks={filteredTasks}
+            onOpenDetails={setActiveTaskId}
+            onToggleSelect={handleToggleSelect}
+            savingTaskId={savingTaskId}
+            selectedTaskIds={selectedTaskIds}
+          />
         ) : (
           <section className={viewMode === 'list' ? 'compact-list' : 'compact-grid'}>
             {filteredTasks.map((task) => renderTaskCard(task))}

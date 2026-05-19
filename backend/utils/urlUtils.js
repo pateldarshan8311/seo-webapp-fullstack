@@ -19,8 +19,7 @@ function normalizeUrl(rawUrl, baseUrl) {
       parsed.port = "";
     }
 
-    parsed.pathname = parsed.pathname.replace(/\/{2,}/g, "/");
-    parsed.pathname = parsed.pathname.replace(/\/+$/, "") || "/";
+    parsed.pathname = parsed.pathname.replace(/\/{2,}/g, "/") || "/";
 
     const sortedParams = [...parsed.searchParams.entries()].sort(([a], [b]) => a.localeCompare(b));
     parsed.search = "";
@@ -136,4 +135,3 @@ module.exports = {
   shouldSkipUrl,
   toComparableKey,
 };
-

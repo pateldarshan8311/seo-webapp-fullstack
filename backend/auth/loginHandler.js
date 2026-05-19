@@ -1,4 +1,5 @@
 const puppeteer = require("puppeteer");
+const sleep = (durationMs) => new Promise((resolve) => setTimeout(resolve, durationMs));
 
 function buildCookieHeader(cookies = []) {
   return cookies
@@ -65,6 +66,8 @@ async function applyCookiesToPage(page, cookies = [], pageUrl) {
 }
 
 async function applyPageProfile(page, session, pageUrl) {
+  await page.setViewport({ width: 1440, height: 900 });
+
   if (session?.userAgent) {
     await page.setUserAgent(session.userAgent);
   }
@@ -156,8 +159,16 @@ async function renderPageWithSession({ session, url, timeoutMs = 30000 }) {
 
   const response = await page.goto(url, {
     timeout: timeoutMs,
-    waitUntil: "networkidle2",
+    waitUntil: "domcontentloaded",
   });
+
+  await page
+    .waitForFunction(() => Boolean(document.body && document.body.innerText.trim().length > 0), {
+      timeout: Math.min(timeoutMs, 10000),
+    })
+    .catch(() => null);
+
+  await sleep(1000);
 
   const html = await page.content();
   const finalUrl = page.url();

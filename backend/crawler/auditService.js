@@ -315,8 +315,14 @@ class AuditService {
 
   normalizeConfig(payload) {
     const mode = ["sitemap", "auto", "manual"].includes(payload.mode) ? payload.mode : "auto";
-    const targetUrl = payload.targetUrl ? normalizeUrl(payload.targetUrl) : null;
-    const manualUrls = Array.isArray(payload.manualUrls) ? payload.manualUrls : [];
+    const normalizeCrawlUrl = (value, baseUrl) => {
+      const normalized = value ? normalizeUrl(value, baseUrl) : null;
+      return normalized ? this.getPreferredRenderUrl(normalized) : null;
+    };
+    const targetUrl = normalizeCrawlUrl(payload.targetUrl);
+    const manualUrls = Array.isArray(payload.manualUrls)
+      ? payload.manualUrls.map((url) => normalizeCrawlUrl(url, targetUrl || undefined)).filter(Boolean)
+      : [];
 
     if (!targetUrl && mode !== "manual") {
       throw new Error("A valid target URL is required.");
@@ -335,7 +341,7 @@ class AuditService {
       mode,
       rateLimitMs: Math.min(Math.max(Number(payload.rateLimitMs) || 250, 0), 5000),
       renderJs: Boolean(payload.renderJs),
-      sitemapUrl: payload.sitemapUrl ? normalizeUrl(payload.sitemapUrl, targetUrl || undefined) : null,
+      sitemapUrl: normalizeCrawlUrl(payload.sitemapUrl, targetUrl || undefined),
       targetUrl,
       timeoutMs: Math.min(Math.max(Number(payload.timeoutMs) || 20000, 3000), 60000),
       userAgent: payload.userAgent || DEFAULT_BROWSER_USER_AGENT,
@@ -360,10 +366,6 @@ class AuditService {
         concurrency: audit.config.concurrency,
         delayMs: audit.config.rateLimitMs,
       });
-      const linkQueue = new AsyncQueue({
-        concurrency: Math.max(2, Math.ceil(audit.config.concurrency / 2)),
-        delayMs: Math.max(100, Math.floor(audit.config.rateLimitMs / 2)),
-      });
 
       audit.runtime = {
         ...this.createRuntimeState(audit, session, {
@@ -383,7 +385,10 @@ class AuditService {
 
       await this.persistAudit(audit);
       await pageQueue.onIdle();
-      await linkQueue.onIdle();
+      await Promise.allSettled(audit.runtime.pageDetailPromises || []);
+      await audit.runtime.linkQueue.onIdle();
+
+      audit.pages = this.syncInternalLinkStatusesFromPages(audit.pages, audit.config.targetUrl);
 
       const advanced = analyzeAdvancedChecks(audit.pages, audit.config.targetUrl || audit.pages[0]?.url);
       audit.pages = this.mergePageWorkflowState(audit.pages, advanced.pages);
@@ -416,15 +421,13 @@ class AuditService {
       depthMap: new Map(),
       linkQueue:
         overrides.linkQueue ||
-        new AsyncQueue({
-          concurrency: Math.max(2, Math.ceil(audit.config.concurrency / 2)),
-          delayMs: Math.max(100, Math.floor(audit.config.rateLimitMs / 2)),
-        }),
+        new AsyncQueue(this.getLinkQueueOptions(audit)),
       linkStatusCache: new Map(),
       pageQueue: overrides.pageQueue || null,
       queuedUrls: overrides.queuedUrls || new Set(),
       session,
       visitedUrls: overrides.visitedUrls || new Set(),
+      pageDetailPromises: overrides.pageDetailPromises || [],
     };
   }
 
@@ -452,18 +455,30 @@ class AuditService {
       audit.runtime = this.createRuntimeState(audit, session);
 
       const pageByUrl = new Map((audit.pages || []).map((page) => [page.url, page]));
+      const pageDetailPromises = [];
 
       for (const pageUrl of uniqueUrls) {
         const previousPage = pageByUrl.get(pageUrl);
         audit.runtime.depthMap.set(pageUrl, previousPage?.crawlDepth || 0);
         const response = await this.fetchPage(audit, pageUrl);
-        const nextPage = await this.buildPageRecord(audit, pageUrl, response);
+        const nextPage = await this.buildPageRecord(audit, pageUrl, response, { deferLinkStatusResolution: true });
         pageByUrl.set(pageUrl, nextPage);
+        pageDetailPromises.push(
+          this.enrichPageLinkData(audit, nextPage)
+            .then((enrichedPage) => {
+              pageByUrl.set(pageUrl, enrichedPage);
+            })
+            .catch(() => null),
+        );
       }
 
+      await Promise.allSettled(pageDetailPromises);
       await audit.runtime.linkQueue.onIdle();
 
-      const nextPages = (audit.pages || []).map((page) => pageByUrl.get(page.url) || page);
+      const nextPages = this.syncInternalLinkStatusesFromPages(
+        (audit.pages || []).map((page) => pageByUrl.get(page.url) || page),
+        audit.config.targetUrl,
+      );
       const advanced = analyzeAdvancedChecks(nextPages, audit.config.targetUrl || nextPages[0]?.url);
       audit.pages = this.mergePageWorkflowState(audit.pages, advanced.pages);
 
@@ -561,7 +576,7 @@ class AuditService {
     audit.updatedAt = new Date().toISOString();
 
     const response = await this.fetchPage(audit, url);
-    const pageRecord = await this.buildPageRecord(audit, url, response);
+    const pageRecord = await this.buildPageRecord(audit, url, response, { deferLinkStatusResolution: true });
     audit.pages.push(pageRecord);
     audit.progress.crawled += 1;
 
@@ -579,11 +594,14 @@ class AuditService {
 
     this.updateProgress(audit);
     await this.persistAudit(audit);
+
+    const pageDetailPromise = this.enrichPageLinkData(audit, pageRecord).catch(() => null);
+    audit.runtime.pageDetailPromises.push(pageDetailPromise);
   }
 
   async fetchPage(audit, url) {
     const redirectChain = [];
-    let currentUrl = url;
+    let currentUrl = this.getPreferredRenderUrl(url);
     let html = "";
     let headers = {};
     let finalStatus = 0;
@@ -634,16 +652,19 @@ class AuditService {
       this.shouldBypassInterstitial({ headers, html, status: finalStatus });
 
     if (shouldRenderInBrowser) {
+      const renderUrl = this.getPreferredRenderUrl(currentUrl);
       const rendered = await renderPageWithSession({
         session: audit.runtime.session,
         timeoutMs: audit.config.timeoutMs,
-        url: currentUrl,
-      });
+        url: renderUrl,
+      }).catch(() => null);
 
-      html = rendered.html;
-      headers = rendered.headers || headers;
-      finalStatus = rendered.status || finalStatus;
-      currentUrl = rendered.finalUrl || currentUrl;
+      if (rendered) {
+        html = rendered.html;
+        headers = rendered.headers || headers;
+        finalStatus = rendered.status || finalStatus;
+        currentUrl = rendered.finalUrl || currentUrl;
+      }
     }
 
     return {
@@ -678,7 +699,7 @@ class AuditService {
     );
   }
 
-  async buildPageRecord(audit, url, response) {
+  async buildPageRecord(audit, url, response, options = {}) {
     const crawlDepth = audit.runtime?.depthMap?.get(url) || 0;
     const pageRecord = {
       canonical: "",
@@ -770,19 +791,21 @@ class AuditService {
     const structuredData = audit.config.deepScan ? analyzeStructuredData($) : { structuredData: pageRecord.structuredData };
     const { imageStats, images } = analyzeImages($, pageRecord.finalUrl);
     const links = analyzeLinks($, pageRecord.finalUrl, audit.config.targetUrl || pageRecord.finalUrl);
-    const linkStatuses = await this.resolveLinkStatuses(audit, [...links.internalLinks, ...links.externalLinks]);
+    const internalLinks = options.deferLinkStatusResolution
+      ? links.internalLinks.map((link) => ({
+          ...link,
+          status: null,
+        }))
+      : [];
+    const externalLinks = options.deferLinkStatusResolution
+      ? links.externalLinks.map((link) => ({
+          ...link,
+          status: null,
+        }))
+      : [];
+    const brokenLinks = [];
 
-    const internalLinks = links.internalLinks.map((link) => ({
-      ...link,
-      status: linkStatuses[link.url] ?? 0,
-    }));
-    const externalLinks = links.externalLinks.map((link) => ({
-      ...link,
-      status: linkStatuses[link.url] ?? 0,
-    }));
-    const brokenLinks = [...internalLinks, ...externalLinks].filter((link) => !link.status || link.status >= 400);
-
-    return {
+    const nextPageRecord = {
       ...pageRecord,
       ...content,
       ...headings,
@@ -806,15 +829,78 @@ class AuditService {
         missingTitle: !meta.title,
       },
       linkStats: {
-        brokenCount: brokenLinks.length,
-        externalCount: externalLinks.length,
+        brokenCount: 0,
+        externalCount: links.externalLinks.length,
         incomingInternalLinkCount: 0,
-        outgoingInternalLinkCount: internalLinks.length,
+        outgoingInternalLinkCount: links.internalLinks.length,
       },
       thirdPartyUrls: links.thirdPartyUrls,
       titleLength: meta.title.length,
       wordCount: content.contentStats.wordCount,
     };
+
+    if (!options.deferLinkStatusResolution) {
+      return this.enrichPageLinkData(audit, nextPageRecord);
+    }
+
+    return {
+      ...nextPageRecord,
+      pendingLinkChecks: links,
+    };
+  }
+
+  async enrichPageLinkData(audit, pageRecord) {
+    const pendingLinks = pageRecord.pendingLinkChecks || {
+      externalLinks: pageRecord.externalLinks || [],
+      internalLinks: pageRecord.internalLinks || [],
+      thirdPartyUrls: pageRecord.thirdPartyUrls || [],
+    };
+    const linksToResolve = [
+      ...(this.shouldResolveInternalLinkStatuses(audit) ? pendingLinks.internalLinks : []),
+      ...(this.shouldResolveExternalLinkStatuses(audit) ? pendingLinks.externalLinks : []),
+    ];
+    const linkStatuses = await this.resolveLinkStatuses(audit, linksToResolve);
+
+    const internalLinks = pendingLinks.internalLinks.map((link) => ({
+      ...link,
+      status: linkStatuses[link.url] ?? link.status ?? null,
+    }));
+    const externalLinks = pendingLinks.externalLinks.map((link) => ({
+      ...link,
+      status: linkStatuses[link.url] ?? link.status ?? null,
+    }));
+    const brokenLinks = [
+      ...internalLinks.filter((link) => this.isBrokenLinkStatus(link.status, { linkUrl: link.url })),
+      ...externalLinks.filter((link) =>
+        this.isBrokenLinkStatus(link.status, {
+          isExternal: true,
+          linkUrl: link.url,
+        })),
+    ];
+
+    const nextPageRecord = {
+      ...pageRecord,
+      brokenLinks,
+      externalLinks,
+      internalLinks,
+      linkStats: {
+        ...(pageRecord.linkStats || {}),
+        brokenCount: brokenLinks.length,
+        externalCount: externalLinks.length,
+        outgoingInternalLinkCount: internalLinks.length,
+      },
+      pendingLinkChecks: undefined,
+      thirdPartyUrls: pendingLinks.thirdPartyUrls || [],
+    };
+
+    const pageIndex = this.findPageIndex(audit, pageRecord.url);
+
+    if (pageIndex >= 0) {
+      audit.pages[pageIndex] = nextPageRecord;
+      await this.persistAudit(audit);
+    }
+
+    return nextPageRecord;
   }
 
   async resolveLinkStatuses(audit, links) {
@@ -835,16 +921,17 @@ class AuditService {
 
     const statusPromise = audit.runtime.linkQueue
       .add(async () => {
+        const timeoutMs = this.getLinkStatusTimeoutMs(audit);
         const headResponse = await axios
           .head(linkUrl, {
             headers: this.buildHeaders(audit, { Accept: "*/*" }),
             maxRedirects: audit.config.maxRedirects,
-            timeout: Math.max(5000, Math.floor(audit.config.timeoutMs / 2)),
+            timeout: timeoutMs,
             validateStatus: () => true,
           })
           .catch(() => null);
 
-        if (headResponse && headResponse.status !== 405) {
+        if (headResponse && !this.shouldRetryLinkWithGet(headResponse.status)) {
           return headResponse.status || 0;
         }
 
@@ -852,17 +939,124 @@ class AuditService {
           .get(linkUrl, {
             headers: this.buildHeaders(audit, { Accept: "*/*" }),
             maxRedirects: audit.config.maxRedirects,
-            timeout: Math.max(5000, Math.floor(audit.config.timeoutMs / 2)),
+            timeout: timeoutMs,
+            responseType: "stream",
             validateStatus: () => true,
           })
           .catch(() => null);
 
-        return getResponse?.status || 0;
+        return getResponse?.status || headResponse?.status || 0;
       }, { url: linkUrl })
       .catch(() => 0);
 
     audit.runtime.linkStatusCache.set(linkUrl, statusPromise);
     return statusPromise;
+  }
+
+  getLinkStatusTimeoutMs(audit) {
+    return Math.min(8000, Math.max(3000, Math.floor((audit.config.timeoutMs || 20000) / 3)));
+  }
+
+  shouldResolveInternalLinkStatuses(audit) {
+    return audit.config.mode === "manual";
+  }
+
+  shouldResolveExternalLinkStatuses(_audit) {
+    return false;
+  }
+
+  shouldRetryLinkWithGet(status) {
+    if (!status) {
+      return true;
+    }
+
+    return status === 405 || status >= 400;
+  }
+
+  isBrokenLinkStatus(status, options = {}) {
+    const numericStatus = Number(status) || 0;
+
+    if (!numericStatus) {
+      return false;
+    }
+
+    if (options.isExternal && [401, 403, 429].includes(numericStatus)) {
+      return false;
+    }
+
+    return numericStatus >= 400;
+  }
+
+  syncInternalLinkStatusesFromPages(pages = [], targetUrl) {
+    const statusByUrl = new Map();
+
+    for (const page of pages) {
+      for (const candidate of [page.url, page.finalUrl]) {
+        const normalized = normalizeUrl(candidate, targetUrl || undefined);
+
+        if (!normalized) {
+          continue;
+        }
+
+        statusByUrl.set(normalized, page.status || 0);
+      }
+    }
+
+    return pages.map((page) => {
+      const internalLinks = (page.internalLinks || []).map((link) => {
+        const normalized = normalizeUrl(link.url, targetUrl || page.url || undefined);
+        const inferredStatus = normalized ? statusByUrl.get(normalized) : null;
+
+        return {
+          ...link,
+          status: inferredStatus ?? link.status ?? null,
+        };
+      });
+      const externalLinks = page.externalLinks || [];
+      const brokenLinks = [
+        ...internalLinks.filter((link) => this.isBrokenLinkStatus(link.status, { linkUrl: link.url })),
+        ...externalLinks.filter((link) =>
+          this.isBrokenLinkStatus(link.status, {
+            isExternal: true,
+            linkUrl: link.url,
+          })),
+      ];
+
+      return {
+        ...page,
+        brokenLinks,
+        externalLinks,
+        internalLinks,
+        linkStats: {
+          ...(page.linkStats || {}),
+          brokenCount: brokenLinks.length,
+          externalCount: externalLinks.length,
+          outgoingInternalLinkCount: internalLinks.length,
+        },
+      };
+    });
+  }
+
+  getLinkQueueOptions(audit) {
+    return {
+      concurrency: Math.min(16, Math.max(6, audit.config.concurrency * 3)),
+      delayMs: Math.min(150, Math.max(25, Math.floor(audit.config.rateLimitMs / 3))),
+    };
+  }
+
+  getPreferredRenderUrl(rawUrl) {
+    try {
+      const parsed = new URL(rawUrl);
+      const lastSegment = parsed.pathname.split("/").filter(Boolean).pop() || "";
+
+      if (parsed.pathname !== "/" && !parsed.pathname.endsWith("/") && !lastSegment.includes(".")) {
+        parsed.pathname = `${parsed.pathname}/`;
+      }
+
+      return parsed.toString();
+    } catch (_error) {
+      return rawUrl;
+    }
   }
 
   buildHeaders(audit, extraHeaders = {}) {
@@ -982,7 +1176,13 @@ class AuditService {
       error: hydrated.error,
       config: hydrated.config,
       progress: hydrated.progress,
-      pages: includePages ? hydrated.pages : [],
+      pages: includePages
+        ? hydrated.pages.map((page) => {
+            const sanitizedPage = { ...page };
+            delete sanitizedPage.pendingLinkChecks;
+            return sanitizedPage;
+          })
+        : [],
       summary: hydrated.summary,
       tasks: includeTasks ? hydrated.tasks : [],
       taskSummary: hydrated.taskSummary,

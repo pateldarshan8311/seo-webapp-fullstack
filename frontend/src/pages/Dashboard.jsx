@@ -25,8 +25,8 @@ function Dashboard() {
   const [taskStatusFilter, setTaskStatusFilter] = useState('all');
   const [taskCategoryFilter, setTaskCategoryFilter] = useState('all');
   const [taskDateFilter, setTaskDateFilter] = useState('all');
-  const [pageViewMode, setPageViewMode] = useState('board');
-  const [taskViewMode, setTaskViewMode] = useState('board');
+  const [pageViewMode, setPageViewMode] = useState('list');
+  const [taskViewMode, setTaskViewMode] = useState('list');
   const [error, setError] = useState('');
   const [isMutating, setIsMutating] = useState(false);
 

@@ -331,6 +331,80 @@ function EmptyState() {
   );
 }
 
+function ListPageTable({ activeTab, onOpenDetails, onPageStatusChange, pages, savingPageUrl }) {
+  return (
+    <section className="panel table-panel">
+      <div className="table-wrap">
+        <table className="audit-table">
+          <thead>
+            <tr>
+              <th>URL</th>
+              <th>HTTP</th>
+              <th>Workflow</th>
+              <th>Title</th>
+              <th>H1</th>
+              <th>Words</th>
+              <th>Internal</th>
+              <th>External</th>
+              <th>Broken</th>
+              <th>Issues</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pages.map((page) => {
+              const issueKeys = getActiveIssueKeys(activeTab, page);
+              const healthBucket = getPageHealthBucket(page);
+
+              return (
+                <tr key={page.url}>
+                  <td>
+                    <button type="button" className="inline-button" onClick={() => onOpenDetails(page.url)}>
+                      {page.url}
+                    </button>
+                  </td>
+                  <td>
+                    <span className={`status-pill ${(page.status || 0) >= 400 ? 'danger' : 'success'}`}>{page.status || 'N/A'}</span>
+                  </td>
+                  <td>
+                    <select
+                      className="compact-select"
+                      value={healthBucket}
+                      disabled={savingPageUrl === page.url}
+                      onChange={(event) => onPageStatusChange(page.url, event.target.value)}
+                    >
+                      {PAGE_REVIEW_STATUS_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td>{page.title || <span className="muted">Untitled</span>}</td>
+                  <td>{page.h1?.[0] || <span className="muted">Missing</span>}</td>
+                  <td>{formatNumber(page.wordCount || 0)}</td>
+                  <td>{formatNumber(page.internalLinks?.length || 0)}</td>
+                  <td>{formatNumber(page.externalLinks?.length || 0)}</td>
+                  <td>{formatNumber(page.brokenLinks?.length || 0)}</td>
+                  <td>
+                    {issueKeys.length ? (
+                      <div className="table-issue-stack">
+                        <strong>{formatNumber(issueKeys.length)}</strong>
+                        <span>{issueKeys.slice(0, 3).map(humanizeIssueKey).join(', ')}</span>
+                      </div>
+                    ) : (
+                      <span className="muted">None</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
 function TableView({ activeTab, auditId, onAuditReplaced, pages, viewMode = 'board' }) {
   const [activePageUrl, setActivePageUrl] = useState('');
   const [savingPageUrl, setSavingPageUrl] = useState('');
@@ -462,6 +536,14 @@ function TableView({ activeTab, auditId, onAuditReplaced, pages, viewMode = 'boa
             ))}
           </div>
         </section>
+      ) : viewMode === 'list' ? (
+        <ListPageTable
+          activeTab={activeTab}
+          onOpenDetails={setActivePageUrl}
+          onPageStatusChange={handlePageStatusChange}
+          pages={pages}
+          savingPageUrl={savingPageUrl}
+        />
       ) : (
         <section className={viewMode === 'list' ? 'compact-list' : 'compact-grid'}>
           {pages.map((page) => (
