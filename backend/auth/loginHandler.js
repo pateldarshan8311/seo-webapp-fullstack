@@ -64,12 +64,23 @@ async function applyCookiesToPage(page, cookies = [], pageUrl) {
   await page.setCookie(...preparedCookies);
 }
 
+async function applyPageProfile(page, session, pageUrl) {
+  if (session?.userAgent) {
+    await page.setUserAgent(session.userAgent);
+  }
+
+  if (session?.cookies?.length) {
+    await applyCookiesToPage(page, session.cookies, pageUrl);
+  }
+}
+
 async function createSession(authConfig = {}, options = {}) {
   const session = {
     authConfig,
     browser: null,
     cookieHeader: "",
     cookies: [],
+    userAgent: options.userAgent || "",
   };
 
   const cookieString = String(authConfig.cookieString || "").trim();
@@ -98,9 +109,7 @@ async function createSession(authConfig = {}, options = {}) {
 
   const page = await session.browser.newPage();
 
-  if (session.cookies.length) {
-    await applyCookiesToPage(page, session.cookies, authConfig.loginUrl || options.targetUrl);
-  }
+  await applyPageProfile(page, session, authConfig.loginUrl || options.targetUrl);
 
   await page.goto(authConfig.loginUrl, {
     timeout: authConfig.timeoutMs || 30000,
@@ -143,10 +152,7 @@ async function renderPageWithSession({ session, url, timeoutMs = 30000 }) {
   }
 
   const page = await session.browser.newPage();
-
-  if (session.cookies.length) {
-    await applyCookiesToPage(page, session.cookies, url);
-  }
+  await applyPageProfile(page, session, url);
 
   const response = await page.goto(url, {
     timeout: timeoutMs,

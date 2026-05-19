@@ -36,6 +36,8 @@ const {
 } = require("../utils/urlUtils");
 
 const DATA_DIR = path.join(__dirname, "..", "data", "audits");
+const DEFAULT_BROWSER_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
 
 class AuditService {
   constructor(auditRepository) {
@@ -336,9 +338,7 @@ class AuditService {
       sitemapUrl: payload.sitemapUrl ? normalizeUrl(payload.sitemapUrl, targetUrl || undefined) : null,
       targetUrl,
       timeoutMs: Math.min(Math.max(Number(payload.timeoutMs) || 20000, 3000), 60000),
-      userAgent:
-        payload.userAgent ||
-        "Mozilla/5.0 (compatible; SEOAuditBot/1.0; +https://localhost)",
+      userAgent: payload.userAgent || DEFAULT_BROWSER_USER_AGENT,
     };
   }
 
@@ -353,6 +353,7 @@ class AuditService {
       session = await createSession(audit.config.auth, {
         enableBrowser: audit.config.renderJs,
         targetUrl: audit.config.targetUrl || audit.config.manualUrls[0],
+        userAgent: audit.config.userAgent,
       });
 
       const pageQueue = new AsyncQueue({
@@ -445,6 +446,7 @@ class AuditService {
       session = await createSession(audit.config.auth, {
         enableBrowser: audit.config.renderJs,
         targetUrl: audit.config.targetUrl || uniqueUrls[0],
+        userAgent: audit.config.userAgent,
       });
 
       audit.runtime = this.createRuntimeState(audit, session);
@@ -592,6 +594,9 @@ class AuditService {
         .get(currentUrl, {
           headers: this.buildHeaders(audit, {
             Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cache-Control": "no-cache",
+            Pragma: "no-cache",
           }),
           maxRedirects: 0,
           responseType: "text",
@@ -624,7 +629,11 @@ class AuditService {
       break;
     }
 
-    if (audit.config.renderJs && finalStatus && finalStatus < 500) {
+    const shouldRenderInBrowser =
+      (audit.config.renderJs && finalStatus && finalStatus < 500) ||
+      this.shouldBypassInterstitial({ headers, html, status: finalStatus });
+
+    if (shouldRenderInBrowser) {
       const rendered = await renderPageWithSession({
         session: audit.runtime.session,
         timeoutMs: audit.config.timeoutMs,
@@ -645,6 +654,28 @@ class AuditService {
       responseTimeMs: Date.now() - startedAt,
       status: finalStatus,
     };
+  }
+
+  shouldBypassInterstitial({ headers = {}, html = "", status = 0 }) {
+    const normalizedHtml = String(html || "").toLowerCase();
+    const serverHeader = String(headers.server || headers.Server || "").toLowerCase();
+
+    const interstitialSignals = [
+      "just a moment...",
+      "enable javascript and cookies to continue",
+      "cf-chl",
+      "challenge-platform",
+      "attention required!",
+      "checking if the site connection is secure",
+    ];
+
+    return (
+      [403, 429, 503].includes(Number(status) || 0) &&
+      interstitialSignals.some((signal) => normalizedHtml.includes(signal))
+    ) || (
+      serverHeader.includes("cloudflare") &&
+      interstitialSignals.some((signal) => normalizedHtml.includes(signal))
+    );
   }
 
   async buildPageRecord(audit, url, response) {
@@ -837,6 +868,7 @@ class AuditService {
   buildHeaders(audit, extraHeaders = {}) {
     const headers = {
       "User-Agent": audit.config.userAgent,
+      "Accept-Language": "en-US,en;q=0.9",
       ...extraHeaders,
     };
 
