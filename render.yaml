@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: seo-webapp-backend
+    runtime: node
+    plan: free
+    rootDir: backend
+    buildCommand: npm ci
+    startCommand: node server.js
+    autoDeployTrigger: commit
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: FRONTEND_ORIGIN
+        sync: false
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+      - key: ALLOW_NETLIFY_PREVIEW_ORIGINS
+        value: "false"
+      - key: MONGODB_URI
+        sync: false
+      - key: MONGODB_DB_NAME
+        value: "seo_audit_app"
+      - key: MONGODB_COLLECTION
+        value: "audits"
