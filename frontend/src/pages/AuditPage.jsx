@@ -33,7 +33,7 @@ function AuditPage() {
 
   useEffect(() => {
     listAudits()
-      .then(setRecentAudits)
+      .then((audits) => setRecentAudits(Array.isArray(audits) ? audits : []))
       .catch(() => setRecentAudits([]));
   }, []);
 
