@@ -96,6 +96,10 @@ function AuditPage() {
     }
   };
 
+  const getAuditPageCount = (audit) => {
+    return audit.summary?.totals?.totalPages ?? audit.progress?.crawled ?? 0;
+  };
+
   return (
     <div className="grid two-column">
       <section className="panel hero-panel">
@@ -321,7 +325,7 @@ function AuditPage() {
               </div>
               <strong>{audit.config?.targetUrl || audit.config?.manualUrls?.[0] || 'Manual audit'}</strong>
               <div className="stack-list">
-                <span>Pages: {formatNumber(audit.summary?.totals?.totalPages || 0)}</span>
+                <span>Pages: {formatNumber(getAuditPageCount(audit))}</span>
                 <span>Duration: {formatDuration(audit.summary?.durationMs)}</span>
               </div>
             </button>

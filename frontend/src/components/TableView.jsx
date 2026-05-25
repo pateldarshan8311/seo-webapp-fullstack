@@ -323,10 +323,10 @@ function PageDetailsPanel({ activeTab, onPageStatusChange, page, savingPageUrl }
   );
 }
 
-function EmptyState() {
+function EmptyState({ message = 'No cards match the current filters.' }) {
   return (
     <section className="panel compact-panel">
-      <p className="muted">No cards match the current filters.</p>
+      <p className="muted">{message}</p>
     </section>
   );
 }
@@ -405,7 +405,7 @@ function ListPageTable({ activeTab, onOpenDetails, onPageStatusChange, pages, sa
   );
 }
 
-function TableView({ activeTab, auditId, onAuditReplaced, pages, viewMode = 'board' }) {
+function TableView({ activeTab, audit, auditId, onAuditReplaced, pages, viewMode = 'board' }) {
   const [activePageUrl, setActivePageUrl] = useState('');
   const [savingPageUrl, setSavingPageUrl] = useState('');
   const [banner, setBanner] = useState('');
@@ -496,7 +496,12 @@ function TableView({ activeTab, auditId, onAuditReplaced, pages, viewMode = 'boa
   };
 
   if (!pages.length) {
-    return <EmptyState />;
+    const emptyMessage =
+      audit?.status === 'failed' && audit?.error
+        ? `Audit failed: ${audit.error}`
+        : 'No cards match the current filters.';
+
+    return <EmptyState message={emptyMessage} />;
   }
 
   return (

@@ -250,6 +250,9 @@ function Dashboard() {
         </div>
 
         {error ? <p className="error-text compact-message">{error}</p> : null}
+        {!error && audit.status === 'failed' && audit.error ? (
+          <p className="error-text compact-message">{audit.error}</p>
+        ) : null}
       </section>
 
       <Filters
@@ -282,6 +285,7 @@ function Dashboard() {
       ) : (
         <TableView
           activeTab={activeTab}
+          audit={audit}
           auditId={audit.id}
           onAuditReplaced={handleAuditReplaced}
           pages={filteredPages}
